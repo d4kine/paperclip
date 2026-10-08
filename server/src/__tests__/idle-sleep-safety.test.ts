@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agentInstructionWorkingCopies, agents, agentApiKeys, agentWakeupRequests, companies, companySecretProposals, createDb,
   adapterAuthSessions, environments, environmentLeases, executionWorkspaces,
-  heartbeatRuns, issues, projects, routines, type Db,
+  heartbeatRuns, issues, issueWatchdogs, projects, routines, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
@@ -137,6 +137,20 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     await db.insert(issues).values({ companyId, title: "Finished work", status: "done" });
     await db.insert(routines).values({ companyId, title: "Paused schedule", status: "paused" });
     await db.insert(environmentLeases).values({ companyId, status: "released" });
+    expect(await read()).toEqual(none);
+  });
+
+  it("blocks a saved watchdog on a completed issue before its first review starts", async () => {
+    const { companyId, agentId } = await seed();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Finished work", status: "done" }).returning();
+    expect(await read()).toEqual(none);
+    const [watchdog] = await db.insert(issueWatchdogs).values({
+      companyId, issueId: issue!.id, watchdogAgentId: agentId, status: "active",
+    }).returning();
+    expect(watchdog!.watchdogIssueId).toBeNull();
+    expect(watchdog!.lastTriggeredAt).toBeNull();
+    expect(await read()).toEqual(present);
+    await db.update(issueWatchdogs).set({ status: "disabled" }).where(eq(issueWatchdogs.id, watchdog!.id));
     expect(await read()).toEqual(none);
   });
 

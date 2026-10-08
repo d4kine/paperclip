@@ -30,6 +30,10 @@ An idle hold rejects new tenant HTTP requests and WebSocket upgrades with 503
 and `Retry-After: 1`. Health checks and authenticated task-drain control remain
 available. Ordinary deploy drains do not enable this HTTP gate. The host must
 handle retry/wake at its ingress before enabling automatic sleep.
+Health and control mutations remain tracked through completion, including
+signed bootstrap writes. Only the task-drain read skips request tracking.
+Its authentication finishes under a separate work token before entering the
+report, so it counts concurrent writes without blocking on its own scan.
 
 ## Accepted work and cleanup
 
@@ -68,9 +72,10 @@ The report checks all companies in one bounded read-only database transaction.
 Queued and orphaned runs, timers, retries, accounting debt, unfinished issues,
 cleanup, active routines, integrations, external API credentials, and plugin
 work block sleep. Completed ordinary run history does not. Less common work
-sources conservatively block on any retained records. Missing migrations,
-malformed configuration and database errors produce unknown without exposing
-SQL or tenant data.
+sources conservatively block on any retained records. Active issue watchdogs
+block sleep even when their watched issue is complete and no review has started.
+Missing migrations, malformed configuration and database errors produce unknown
+without exposing SQL or tenant data.
 
 Every enabled plugin blocks sleep. A version label does not prove that arbitrary
 worker code has no background activity. No plugin approval or configuration

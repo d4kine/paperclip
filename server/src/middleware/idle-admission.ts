@@ -14,6 +14,9 @@ function settle(work: RequestWork) {
 // Only the exact control endpoint and health probes bypass admission. The
 // control route still authenticates each operation. GET is otherwise tracked:
 // OAuth callbacks and tool streams can create work too.
+// Reachability does not exempt health/bootstrap or control mutations from
+// tracking. Only the task-drain read skips request tracking to avoid counting
+// its own scan; actorMiddleware counts its preceding authentication separately.
 function isControlRequest(req: Request) {
   const path = req.path.replace(/\/$/, "");
   return (path === "/api/instance/task-drain" && ["GET", "POST", "DELETE"].includes(req.method)) ||
@@ -22,9 +25,13 @@ function isControlRequest(req: Request) {
 
 /** Install before body parsers, auth, webhooks and tool ingress. */
 export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
-  if (isControlRequest(req)) { next(); return; }
-  if (isIdleTaskDrainActive()) {
+  const controlRequest = isControlRequest(req);
+  if (!controlRequest && isIdleTaskDrainActive()) {
     res.set("Retry-After", "1").status(503).json({ error: "instance_preparing_to_sleep" });
+    return;
+  }
+  if (controlRequest && req.method === "GET" && req.path.replace(/\/$/, "") === "/api/instance/task-drain") {
+    next();
     return;
   }
   const work: RequestWork = { pending: 0, ended: false, closed: false, asyncRoute: false, routeSequence: 0, active: true, finish: beginIdleTrackedWork() };

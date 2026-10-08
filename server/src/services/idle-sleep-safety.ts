@@ -43,6 +43,9 @@ const WORK_CHECKS = [
   `SELECT 1 FROM agent_wakeup_requests WHERE
     status NOT IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')`,
   `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`,
+  // A completed issue can still need its first watchdog review, including a
+  // retry after immediate evaluation failed before creating a review/run.
+  `SELECT 1 FROM issue_watchdogs WHERE status <> 'disabled'`,
   `SELECT 1 FROM workspace_operations WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`,
   `SELECT 1 FROM environment_leases WHERE status NOT IN ('released', 'expired')`,
   `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`,
