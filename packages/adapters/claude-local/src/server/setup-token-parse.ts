@@ -367,9 +367,11 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * line after the URL block. The parser reads the non-blank lines after the URL
  * end line. The Claude UI can emit one full URL line per wrapped display row, so
  * it repeats the same full authorization URL on a few consecutive lines. The
- * parser skips a line that repeats `url`, then binds the prompt on the first
- * non-blank, non-repeat line. That line must match the exact prompt shape.
- * Returns null when the first non-blank, non-repeat line is not the prompt.
+ * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
+ * copy hint before the prompt, so the parser skips a line that matches {@link
+ * COPY_HINT_LINE_RE}. The parser then binds the prompt on the first non-blank
+ * line that is not a repeat and not the copy hint. That line must match the
+ * exact prompt shape. Returns null when that line is not the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
   for (let i = endLine + 1; i < lines.length; i += 1) {
