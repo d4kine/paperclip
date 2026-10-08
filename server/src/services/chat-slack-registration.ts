@@ -263,7 +263,8 @@ export function slackChatRegistrationService(db: Db, options: {
         await lease.assertOwned(tx);
         await tx.delete(toolOauthStates).where(and(eq(toolOauthStates.connectionId, current.connection.id), like(toolOauthStates.state, `${prefix}%`)));
         await tx.insert(toolOauthStates).values({ state, companyId: row.companyId, connectionId: current.connection.id,
-          codeVerifier: JSON.stringify({ endpointId, requestId: row.requestId, appId: row.appId, callbackUri: row.callbackUri }),
+          codeVerifier: JSON.stringify({ endpointId, requestId: row.requestId, appId: row.appId, callbackUri: row.callbackUri,
+            endpointStatus: current.endpoint.status, runtimeGeneration: object(current.endpoint.setup).runtimeGeneration ?? 0 }),
           createdByActorType: "user", createdByActorId: actor.userId, createdBySessionId: actor.sessionId,
           requestedScopes: scopes, expiresAt });
         await tx.update(chatSlackRegistrations).set({ errorCode: null, updatedAt: new Date() }).where(eq(chatSlackRegistrations.endpointId, endpointId));
@@ -303,7 +304,9 @@ export function slackChatRegistrationService(db: Db, options: {
     const current = await endpoint(String(binding.endpointId), actor);
     const row = await registration(current.endpoint.id);
     if (!row || row.status === "removed" || current.endpoint.setup.slackSetupMethod !== "automatic"
-      || ["paused", "revoked"].includes(current.endpoint.status)
+      || current.endpoint.status === "paused"
+      || current.endpoint.status === "revoked" && binding.endpointStatus !== "revoked"
+      || binding.runtimeGeneration !== (object(current.endpoint.setup).runtimeGeneration ?? 0)
       || row.requestId !== binding.requestId || row.appId !== binding.appId || row.callbackUri !== binding.callbackUri
       || row.callbackUri !== callbackUri() || attempt.companyId !== row.companyId || attempt.connectionId !== current.connection.id)
       throw conflict("Slack setup changed. Resume the saved connection and install again.");

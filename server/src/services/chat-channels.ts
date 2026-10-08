@@ -26587,7 +26587,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const callback = await inspectSlackCallback(request.clone());
     if (!callback?.isUrlVerification) return null;
     const body = await request.clone().text();
-    let verifiedCurrentUrl = false;
+    let notifyAccount = false;
     // URL verification needs only the signing secret. Do not initialize the
     // SDK (which calls Slack auth.test), wait for OAuth, or acquire the creation
     // lease: Slack can deliver this check while app setup still owns that lease.
@@ -26625,10 +26625,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (matchesCurrentUrl && !setup.webhookVerifiedAt) await logActivity(tx as unknown as Db, { companyId: current.companyId, actorType: "system", actorId: "slack-webhook",
         action: "chat_endpoint.webhook_verified", entityType: "tool_connection", entityId: current.connectionId,
         details: { endpointId: current.id, provider: "slack" } });
-      verifiedCurrentUrl = matchesCurrentUrl;
+      notifyAccount = matchesCurrentUrl && setup.slackAccount?.status === "linked" && !setup.slackAccount.verificationStatus;
       return Response.json({ challenge: (JSON.parse(body) as { challenge: string }).challenge });
     });
-    if (verifiedCurrentUrl) scheduleMessageProcessing(() => slackRegistration.notifyVerified(endpoint.id));
+    if (notifyAccount) scheduleMessageProcessing(() => slackRegistration.notifyVerified(endpoint.id));
     return response;
   }
 

@@ -1321,16 +1321,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   async function recordSlackUrlVerification(
     service: ChatChannelService,
     publicId: string,
+    signingSecret = "test-signing-secret",
   ) {
-    await service.handleWebhook(
+    const response = await service.handleWebhook(
       publicId,
       "slack",
       signedSlackWebhookRequest({
         url: `https://paperclip.example/api/chat-webhooks/${publicId}/slack`,
         contentType: "application/json",
         body: JSON.stringify({ type: "url_verification", challenge: "verified-challenge" }),
+        signingSecret,
       }),
     );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ challenge: "verified-challenge" });
   }
 
   function signedSlackWebhookRequest(input: {
@@ -4578,6 +4582,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
       expect(connection.credentialSecretRefs).toEqual([]);
       await expect(f.service.slackRegistration.resume(f.endpoint.id, actor)).rejects.toThrow();
+    });
+    it("reinstalls a revoked bot using the same app and preserves the linked account", async () => {
+      const f = await fixture();
+      await f.create();
+      await f.service.slackRegistration.complete(await f.install(), "first-code", null, actor);
+      const account = (await f.service.get(f.endpoint.id)).setup.slackAccount;
+      await f.service.handleWebhook(f.endpoint.publicId, "slack", setupEvent(f, {
+        event: { type: "app_uninstalled" },
+      }));
+      expect((await f.service.get(f.endpoint.id)).status).toBe("revoked");
+      await f.service.slackRegistration.complete(await f.install(), "reinstall-code", null, actor);
+      const saved = await f.service.get(f.endpoint.id);
+      expect(saved).toMatchObject({ status: "verifying", providerAccountId: "TAUTO", botExternalId: f.botId });
+      expect(saved.setup.slackRegistration).toMatchObject({ status: "configured", appId: f.appId, errorCode: null });
+      expect(saved.setup.slackAccount).toEqual(account);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
+      expect(connection).toMatchObject({ status: "active", enabled: true });
+      expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("chat.postMessage"))).toHaveLength(1);
+    });
+    it("rejects an authorization started before the bot was revoked", async () => {
+      const f = await fixture();
+      await f.create();
+      await f.service.slackRegistration.complete(await f.install(), "first-code", null, actor);
+      const state = await f.install();
+      const exchanges = f.provider.mock.calls.filter(([url]) => String(url).endsWith("oauth.v2.access")).length;
+      await f.service.handleWebhook(f.endpoint.publicId, "slack", setupEvent(f, {
+        event: { type: "app_uninstalled" },
+      }));
+      await expect(f.service.slackRegistration.complete(state, "late-code", null, actor)).rejects.toThrow();
+      expect((await f.service.get(f.endpoint.id)).status).toBe("revoked");
+      expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("oauth.v2.access"))).toHaveLength(exchanges);
     });
     it.each(["workspace", "bot"])("rejects changing an established %s during reauthorization", async mismatch => {
       const f = await fixture();
@@ -16654,7 +16690,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    await recordSlackUrlVerification(service, endpoint.publicId);
+    await recordSlackUrlVerification(service, endpoint.publicId, "async-ingress-secret");
     await service.configure(endpoint.id, { action: "verify" }, "owner-user");
     const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
     if (!callbacks) throw new Error("Expected endpoint callbacks");
@@ -22106,7 +22142,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    await recordSlackUrlVerification(first.service, endpoint.publicId);
+    await recordSlackUrlVerification(first.service, endpoint.publicId, "restart-attachment-signing-secret");
     await first.service.configure(
       endpoint.id,
       { action: "verify" },
@@ -22245,7 +22281,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    await recordSlackUrlVerification(service, endpoint.publicId);
+    await recordSlackUrlVerification(service, endpoint.publicId, "retry-attachment-signing-secret");
     await service.configure(endpoint.id, { action: "verify" }, "owner-user");
     const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
     if (!callbacks) throw new Error("Expected Slack callbacks");
@@ -23472,7 +23508,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    await recordSlackUrlVerification(service, endpoint.publicId);
+    await recordSlackUrlVerification(service, endpoint.publicId, "generation-boundary-secret");
     await service.configure(endpoint.id, { action: "verify" }, "owner-user");
     const staleCallbacks = runtime.configurations.get(endpoint.id)?.callbacks;
     if (!staleCallbacks) throw new Error("Expected endpoint callbacks");
@@ -25856,7 +25892,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
         "owner-user",
       );
-      await recordSlackUrlVerification(context.service, endpoint.publicId);
+      await recordSlackUrlVerification(context.service, endpoint.publicId, `identity-secret-${suffix}`);
       await context.service.configure(
         endpoint.id,
         { action: "verify" },

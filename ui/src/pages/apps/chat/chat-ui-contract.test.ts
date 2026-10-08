@@ -54,8 +54,9 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("Open {providerNames[provider]}");
-    expect(detail).toContain("Open task");
+    expect(detail).toContain("row.externalUrl");
+    expect(detail).toContain("row.externalLabel");
+    expect(detail).toContain("row.issueTitle ?? row.issueIdentifier ?? \"View task\"");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
@@ -82,8 +83,8 @@ describe("chat connector UI contract", () => {
     const setup = source("./ChatEndpointSetup.tsx");
     expect(detail).toContain("Allow direct messages");
     expect(detail).toContain("Allow group chats");
-    expect(detail).toContain("Their tasks run only with an isolated workspace");
-    expect(detail).toContain("otherwise Paperclip safely refuses the request");
+    expect(detail).toContain("People without linked accounts can start isolated tasks");
+    expect(detail).toContain("Requests are refused when isolation is unavailable");
     expect(setup).toContain("Link the account you’re testing");
     expect(setup).toContain("Paperclip does not replay the refused request");
     expect(setup).toContain("Review identity access");
@@ -249,7 +250,7 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("WebkitTextSecurity");
     expect(setup).toContain("Verify Slack connection");
     expect(setup).toContain("buildSlackAppManifest");
-    expect(setup).toContain("slackBotNameForAgent");
+    expect(setup).toContain("defaultSlackAppConfiguration");
     const manifest = buildSlackAppManifest({
       app: { appName: "Maya", botName: "maya", command: "/maya" },
       agentName: "Maya",
