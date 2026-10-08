@@ -51,8 +51,8 @@ describe("idle admission", () => {
 
   it("does not mistake a client disconnect for completed accepted work", async () => {
     const server = app();
-    const entered = deferred(), done = deferred();
-    server.post("/work", async (_req, res) => { entered.resolve(); await done.promise; res.sendStatus(204); });
+    const entered = deferred(), done = deferred(), closed = deferred();
+    server.post("/work", async (_req, res) => { res.once("close", closed.resolve); entered.resolve(); await done.promise; /* client has left */ });
     trackIdleRequestHandlers(server);
     const listener = server.listen(0, "127.0.0.1");
     await new Promise<void>(resolve => listener.once("listening", resolve));
@@ -63,7 +63,7 @@ describe("idle admission", () => {
     try {
       await entered.promise;
       client.destroy();
-      await new Promise(resolve => setImmediate(resolve));
+      await closed.promise;
       startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
       expect(idleWorkSnapshot().active).toBe(1);
       done.resolve();

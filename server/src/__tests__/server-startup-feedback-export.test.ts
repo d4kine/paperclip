@@ -1,3 +1,5 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -435,6 +437,32 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true])("counts an accepted backup until completion, including failure=%s", async fails => {
+    await startServer();
+    await new Promise(resolve => setImmediate(resolve));
+    const before = idleWorkSnapshot().active;
+    let resolveBackup!: (value: never) => void;
+    let rejectBackup!: (error: Error) => void;
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveBackup = resolve; rejectBackup = reject;
+    }));
+    const options = createAppMock.mock.calls[0]?.[1] as unknown as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+    const backup = options.databaseBackupService.runManualBackup();
+    await Promise.resolve();
+    expect(idleWorkSnapshot().active).toBe(before + 1);
+    if (fails) {
+      const rejection = expect(backup).rejects.toThrow("backup failed");
+      rejectBackup(new Error("backup failed"));
+      await rejection;
+    } else {
+      resolveBackup({ backupFile: "backup.sql.gz", sizeBytes: 1, prunedCount: 0 } as never);
+      await backup;
+    }
+    expect(idleWorkSnapshot().active).toBe(before);
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {

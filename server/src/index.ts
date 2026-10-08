@@ -832,6 +832,7 @@ async function startServerWithDatabaseTeardown(
     }
 
     databaseBackupInFlight = true;
+    const finishIdleBackup = beginIdleTrackedWork();
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
@@ -875,6 +876,7 @@ async function startServerWithDatabaseTeardown(
       throw err;
     } finally {
       databaseBackupInFlight = false;
+      finishIdleBackup();
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
@@ -1894,7 +1896,7 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
-  markIdleStartupComplete();
+  markIdleStartupComplete({ scheduledBackups: config.databaseBackupEnabled });
   setStartupRecoveryPhase("ready");
   logger.info(`Server startup recovery complete on ${config.host}:${listenPort}`);
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {

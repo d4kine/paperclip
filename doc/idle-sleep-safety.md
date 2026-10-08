@@ -36,13 +36,16 @@ handle retry/wake at its ingress before enabling automatic sleep.
 HTTP admission is installed before body parsing, authentication, webhooks and
 MCP ingress. The Express adapter tracks handler promises in nested routers and
 error middleware. Sending a response or losing the client does not complete an
-async handler. A handler that abandons its response without ending it remains a
-sleep blocker. New routes must be registered before this adapter is installed.
+async handler. A callback-only handler that abandons its response without ending it remains a
+sleep blocker. An async route that settles after a disconnect releases its
+request token; normal cancellation does not permanently block sleep. New routes must be registered before this adapter is installed.
 Fire-and-forget work must have durable queue state or use `trackIdleWork`; a
 response is never a substitute for tracking that work.
 
 Scheduler work already in flight remains counted until its promise settles.
-Idle holds pause new scheduler admissions. A generation counter invalidates a
+Idle holds pause new scheduler admissions. Database backup promises remain
+counted through success or failure. Configured periodic backups also block
+sleep until a host owns a durable wake schedule for them. A generation counter invalidates a
 scan if tracked work both starts and finishes during inspection. Reports remain
 unknown until startup recovery and HTTP tracking are installed.
 

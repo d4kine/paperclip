@@ -11,8 +11,12 @@ export const idleOrphanSpoolPath = () => process.env.SANDBOX_ORPHAN_CLEANUP_SPOO
   path.join(resolvePaperclipInstanceRoot(), "data", "sandbox-orphan-cleanup");
 let startupComplete = false;
 let ingressTracked = false;
+let scheduledBackups = false;
 export function markIdleIngressTracked() { ingressTracked = true; }
-export function markIdleStartupComplete() { startupComplete = true; }
+export function markIdleStartupComplete(options: { scheduledBackups: boolean }) {
+  scheduledBackups = options.scheduledBackups;
+  startupComplete = true;
+}
 
 /** Any entry, including malformed JSON, a temp file or a failed probe, is
  * evidence to retain. Recovery readers intentionally skip some such files;
@@ -31,7 +35,7 @@ export async function inspectIdleSpool(directory: string): Promise<IdleLocalWork
 
 export async function readIdleLocalWork(): Promise<IdleLocalWork> {
   if (!startupComplete || !ingressTracked) return "unknown";
-  if (idleWorkSnapshot().active !== 0) return "present";
+  if (scheduledBackups || idleWorkSnapshot().active !== 0) return "present";
   const directories = new Set([...spoolDirectories, idleAccountingSpoolPath(), idleOrphanSpoolPath()]);
   const results = await Promise.all([...directories].map(inspectIdleSpool));
   if (results.includes("unknown")) return "unknown";

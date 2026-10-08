@@ -1,3 +1,4 @@
+import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
 import { companies, type Db } from "@paperclipai/db";
 import {
@@ -107,7 +108,7 @@ function assertCanManageInstanceSettings(req: Request) {
 let taskDrainTransitionQueue: Promise<void> = Promise.resolve();
 
 function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
-  const turn = taskDrainTransitionQueue.then(run);
+  const turn = trackIdleWork(taskDrainTransitionQueue.then(run));
   // Normalize to a settled void promise for the next caller in line, so a
   // rejected transition (a failed audit write, for example) cannot wedge
   // every later transition behind it.
