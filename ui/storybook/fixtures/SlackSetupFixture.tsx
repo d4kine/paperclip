@@ -5,8 +5,9 @@ import { ChatSetupSidebar } from "@/components/chat/ChatSetupNavigation";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { type ChatEndpoint } from "@/api/chatEndpoints";
 import { storybookAgents, storybookAuthSession } from "./paperclipData";
+import { defaultSlackAppConfiguration } from "@paperclipai/shared";
 
-export type SlackSetupScenario = "create" | "manual" | "install" | "declined" | "uncertain" | "recovery" | "verify";
+export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
 
 /** Production wizard over a local provider fixture. No requests go to Slack. */
 export function SlackSetupFixture({ scenario = "create" }: { scenario?: SlackSetupScenario }) {
@@ -14,34 +15,52 @@ export function SlackSetupFixture({ scenario = "create" }: { scenario?: SlackSet
   const [signalVerification, setSignalVerification] = useState<() => void>(() => () => {});
   useLayoutEffect(() => {
     const original = window.fetch;
-    const agent = storybookAgents[0];
+    let agent = { ...storybookAgents[0], name: "Maya" };
+    const agents = [agent, { ...storybookAgents[1], name: "Research Lead" }];
     const endpoint: ChatEndpoint = {
       id: "slack-story", companyId: "company-storybook", provider: "slack", status: "draft",
       assignedAgentId: agent.id, assignedAgentName: agent.name, allowUnlinkedPeople: false,
       setup: { step: "provider_setup", slackSetupMethod: scenario === "manual" ? "manual" : "automatic",
-        slackApp: { appName: "maya-paperclip", botName: "maya", command: "/maya" },
+        slackApp: defaultSlackAppConfiguration(agent.name),
         webhookUrl: "https://ingress.example/api/chat-webhooks/slack-story/slack",
         slackOAuthCallbackUri: "https://board.example/api/chat-slack/oauth/callback",
       },
     };
-    const created = () => { endpoint.setup!.slackRegistration = { status: "install", appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" }; };
+    const created = () => {
+      endpoint.setup!.slackRegistration = { status: "install", appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" };
+      endpoint.setup!.slackAvatar = scenario === "avatar_failed" ? { status: "failed", errorCode: "slack_avatar_upload_failed" } : { status: "uploaded", uploadedAt: new Date().toISOString() };
+    };
+    let linked = false;
     const installed = () => {
       created(); endpoint.setup!.slackRegistration!.status = "configured";
+      linked = true;
+      endpoint.setup!.slackAccount = { externalUserId: "UPERSON", paperclipUserId: storybookAuthSession.user.id, status: "linked", welcomeStatus: scenario === "welcome_failed" ? "failed" : "sent", ...(scenario === "welcome_failed" ? {} : { dmChannelId: "DSTORY" }) };
       endpoint.status = "verifying"; endpoint.providerAccountId = "TSTORY"; endpoint.botExternalId = "USTORY"; endpoint.botUsername = "maya";
     };
-    if (["install", "declined", "recovery"].includes(scenario)) created();
+    if (["install", "declined", "recovery", "manifest_pending"].includes(scenario)) created();
+    if (scenario === "manifest_pending") endpoint.setup!.slackRegistration!.errorCode = "slack_manifest_update_pending";
     if (scenario === "declined") endpoint.setup!.slackRegistration!.errorCode = "slack_install_declined";
     if (scenario === "recovery") endpoint.setup!.slackRegistration = { ...endpoint.setup!.slackRegistration!, status: "credentials_saved", errorCode: "slack_configuration_incomplete" };
     if (scenario === "uncertain") endpoint.setup!.slackRegistration = { status: "uncertain", errorCode: "slack_creation_uncertain", managementUrl: "https://api.slack.com/apps" };
-    if (scenario === "verify") installed();
-    let linked = false;
+    if (["verify", "avatar_failed", "welcome_failed", "success"].includes(scenario)) installed();
+    if (["avatar_failed", "welcome_failed", "success"].includes(scenario)) {
+      endpoint.setup!.webhookVerifiedAt = new Date().toISOString();
+      endpoint.setup!.step = "test";
+      endpoint.setup!.testStartedAt = new Date().toISOString();
+    }
     setSignalVerification(() => () => { endpoint.setup!.webhookVerifiedAt = new Date().toISOString(); });
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
       const path = url.pathname;
-      if (path === "/api/companies/company-storybook/agents") return Response.json(storybookAgents);
+      if (path === "/api/companies/company-storybook/agents") return Response.json(agents);
       if (path === `/api/agents/${agent.id}`) return Response.json(agent);
-      if (path === "/api/companies/company-storybook/chat-endpoints") return Response.json(endpoint);
+      if (path === "/api/companies/company-storybook/chat-endpoints") {
+        const input = JSON.parse(String(init?.body ?? "{}"));
+        agent = agents.find(value => value.id === input.assignedAgentId) ?? agent;
+        endpoint.assignedAgentId = agent.id; endpoint.assignedAgentName = agent.name;
+        endpoint.setup!.slackApp = input.slackApp ?? defaultSlackAppConfiguration(agent.name);
+        return Response.json(endpoint);
+      }
       if (path === "/api/chat-endpoints/slack-story") {
         if (init?.method === "PATCH") {
           const { slackApp, slackSetupMethod } = JSON.parse(String(init.body));
@@ -79,7 +98,7 @@ export function SlackSetupFixture({ scenario = "create" }: { scenario?: SlackSet
   return <div className="space-y-6 p-6">
     <aside className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3 text-sm text-muted-foreground">
       Preview fixture: Slack consent, callbacks, and identity discovery are simulated.
-      <Button variant="outline" size="sm" onClick={signalVerification}>Simulate signed verification</Button>
+      <Button variant="outline" size="sm" onClick={signalVerification}>Simulate connection evidence</Button>
     </aside>
     {ready && <ChatSetupSidebarProvider><div className="flex flex-col gap-8 md:flex-row"><aside className="w-56 shrink-0"><ChatSetupSidebar /></aside><main className="min-w-0 flex-1"><ChatEndpointSetup /></main></div></ChatSetupSidebarProvider>}
   </div>;

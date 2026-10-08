@@ -190,6 +190,9 @@ export interface SlackAppConfiguration {
 export interface ChatEndpointSetupState {
   slackSetupMethod?: "automatic" | "manual" | "existing";
   slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
+  /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
+  slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
+  slackAccount?: import("../slack-app-manifest.js").SlackAccountState;
   slackOAuthCallbackUri?: string | null;
   github?: {
     stage: "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
@@ -482,6 +485,7 @@ export interface CreateChatEndpointInput {
   assignedAgentId: string;
   applicationId?: string;
   name?: string;
+  slackApp?: SlackAppConfiguration;
 }
 
 export interface UpdateChatEndpointInput {

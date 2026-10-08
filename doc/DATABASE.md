@@ -635,6 +635,31 @@ are durably bound; staged duplicates are cleaned and the client secret remains
 available for reauthorization. `removed` invalidates registration and keeps the
 safe app management link for provider-side cleanup.
 
+`chat_endpoints.setup.slackAvatar` records optional avatar provisioning as
+`pending`, `uploaded` with its confirmation timestamp, or `failed` with a fixed
+safe error code. It survives reloads and restarts. App credentials are durably
+bound before icon upload; an interrupted upload never triggers another app
+creation. This JSON state stores no token, image URL, or provider error payload.
+
+`chat_endpoints.setup.slackAccount` stores the OAuth installer’s Slack ID, the
+initiating Paperclip user ID, pending/linked status, durable welcome-DM and
+optional verification-DM status, and the returned DM channel ID. It stores no
+user OAuth token or provider payload.
+The account uses the existing company-scoped `chat_identity_links` table; it
+preserves conflicting/revoked links and does not change on reauthorization.
+Both message dispatches move pending → sending before network I/O, then sent/failed;
+a restart or ambiguous response moves sending → uncertain without replay.
+Signed Request URL verification can precede installation. Internal setup state
+retains a signing-secret fingerprint and observed URL so configuration preserves
+that evidence only for the same secret and callback. No plaintext secret is stored
+in setup state, and the fingerprint is excluded from endpoint responses.
+For automatically registered apps, `webhookVerifiedAt` also records successful
+delivery of an authenticated message/app-mention event to the current callback
+URL. The current signing secret, saved app/workspace/bot binding, active connection,
+and runtime generation are checked before recording it. This is Paperclip's
+connection evidence, not Slack's settings-page URL-verification flag. Activity
+identifies this evidence as `authenticated_event`; no message body is recorded.
+
 Slack install attempts use `tool_oauth_states` with the `slack-install.` namespace.
 They expire after ten minutes, bind the company/connection/endpoint, registration
 request ID, app ID, initiating actor/session, callback URI, and requested scopes,

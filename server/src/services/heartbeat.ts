@@ -1,3 +1,4 @@
+import { slackChatAgentGuidance } from "./connectors/slack/agent-guidance.js";
 import { activeIssueInteractionCondition, TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "./agent-identity.js";
@@ -8798,6 +8799,9 @@ export function buildPaperclipTaskMarkdown(input: {
             "No public task URL is configured. If asked for a link, explain that a public Paperclip URL must be configured; do not invent a URL or expose an internal API or sandbox address.",
           ]),
     );
+  }
+  if (input.externalChatProvider === "slack") {
+    lines.push(...slackChatAgentGuidance(input.nativeRunner === true));
   }
   if (input.externalChatProvider && input.nativeRunner) {
     lines.push(

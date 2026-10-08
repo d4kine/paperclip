@@ -67,20 +67,24 @@ const chatEndpointCredentialsSchema = z
     return normalized;
   });
 
+export const slackAppConfigurationSchema = z.object({
+  appName: z.string().trim().min(1, "Enter a Slack app name.").max(35),
+  botName: z.string().trim().min(1).max(80).regex(/^[a-z0-9._-]+$/, "Use lowercase letters, numbers, dots, hyphens, or underscores for the bot name."),
+  command: z.string().trim().min(2).max(32).regex(/^\/[a-z0-9_-]+$/, "Start the command with / and use lowercase letters, numbers, hyphens, or underscores."),
+}).strict();
+
 export const createChatEndpointSchema = z
   .object({
     provider: chatProviderSchema.exclude(["agentmail"]),
     assignedAgentId: z.string().uuid(),
     applicationId: z.string().uuid().optional(),
     name: z.string().trim().min(1).max(160).optional(),
+    slackApp: slackAppConfigurationSchema.optional(),
   })
-  .strict();
-
-export const slackAppConfigurationSchema = z.object({
-  appName: z.string().trim().min(1, "Enter a Slack app name.").max(35),
-  botName: z.string().trim().min(1).max(80).regex(/^[a-z0-9._-]+$/, "Use lowercase letters, numbers, dots, hyphens, or underscores for the bot name."),
-  command: z.string().trim().min(2).max(32).regex(/^\/[a-z0-9_-]+$/, "Start the command with / and use lowercase letters, numbers, hyphens, or underscores."),
-}).strict();
+  .strict()
+  .refine(value => !value.slackApp || value.provider === "slack", {
+    message: "Slack app details only apply to Slack connections", path: ["slackApp"],
+  });
 
 export const updateChatEndpointSchema = z
   .object({

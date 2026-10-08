@@ -9,6 +9,12 @@ export const SLACK_CHAT_BOT_SCOPES = [
   "reactions:read", "reactions:write", "users:read",
 ] as const;
 
+export function defaultSlackAppConfiguration(agentName: string): SlackAppConfiguration {
+  const botName = agentName.normalize("NFKD").toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "paperclip-agent";
+  return { appName: `${botName}-paperclip`, botName, command: `/${botName.replace(/[._]+/g, "-")}` };
+}
+
 export function buildSlackAppManifest(input: {
   app: SlackAppConfiguration;
   agentName: string;
@@ -57,14 +63,30 @@ export const slackRegistrationStateSchema = z.object({
   errorCode: z.string().nullable().optional(),
 }).strict();
 export type SlackRegistrationState = z.infer<typeof slackRegistrationStateSchema>;
+export const slackAvatarStateSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("pending") }).strict(),
+  z.object({ status: z.literal("uploaded"), uploadedAt: z.string().datetime() }).strict(),
+  z.object({ status: z.literal("failed"), errorCode: z.literal("slack_avatar_upload_failed") }).strict(),
+]);
+export type SlackAvatarState = z.infer<typeof slackAvatarStateSchema>;
+export const slackAccountStateSchema = z.object({
+  externalUserId: z.string().regex(/^[UW][A-Z0-9]+$/),
+  paperclipUserId: z.string().min(1),
+  status: z.enum(["pending", "linked"]),
+  welcomeStatus: z.enum(["pending", "sending", "sent", "failed", "uncertain"]),
+  verificationStatus: z.enum(["pending", "sending", "sent", "failed", "uncertain"]).optional(),
+  dmChannelId: z.string().regex(/^D[A-Z0-9]+$/).optional(),
+}).strict();
+export type SlackAccountState = z.infer<typeof slackAccountStateSchema>;
 export const slackInstallAuthorizationSchema = z.object({ authorizationUrl: z.string().url(), expiresAt: z.string().datetime() });
 export type SlackInstallAuthorization = z.infer<typeof slackInstallAuthorizationSchema>;
 export const slackSetupActionSchema = z.object({}).strict();
 
 export function slackRegistrationErrorMessage(code: string): string {
   const messages: Record<string, string> = {
-    slack_configuration_token_invalid: "Slack rejected the app configuration token. Generate a new configuration token and try again.",
+    slack_configuration_token_invalid: "Slack rejected the app configuration access token. Generate a new access token and try again.",
     slack_manifest_invalid: "Slack rejected this app configuration. Check the app details or use manual setup.",
+    slack_manifest_update_pending: "Your Slack app is saved, but its event settings still need to be applied. Enter an app configuration access token to retry configuring the same app.",
     slack_setup_rate_limited: "Slack is limiting setup requests. Wait a minute and try again.",
     slack_setup_permission_denied: "Slack requires permission to create or install this app. Ask your workspace administrator.",
     slack_creation_uncertain: "Slack may have created the app. Check your Slack app settings before trying again, or connect the existing app manually.",
@@ -75,7 +97,8 @@ export function slackRegistrationErrorMessage(code: string): string {
     slack_install_scopes_missing: "Slack did not grant all required bot permissions. Install the app again and approve its requested permissions.",
     slack_bot_already_connected: "This Slack bot is already connected to Paperclip. Resume its existing connection or use a different app.",
     slack_configuration_incomplete: "The app is installed, but Paperclip could not finish connecting it. Retry connecting the saved installation.",
+    slack_install_account_missing: "Slack did not identify your account. Authorize the same app again to connect your Slack account.",
+    slack_install_account_conflict: "This Slack account already has an existing link. Manage account links in connection settings, or authorize with your own Slack account.",
   };
   return messages[code] ?? "Slack setup could not be completed. Resume setup and try again.";
 }
-

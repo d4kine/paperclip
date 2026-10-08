@@ -3,6 +3,8 @@ import type {
   SlackAppConfiguration,
   SlackRegistrationInput,
   SlackRegistrationState,
+  SlackAvatarState,
+  SlackAccountState,
   SlackInstallAuthorization,
   UpdateChatEndpointInput,
   PhotonProjectInspection,
@@ -108,6 +110,7 @@ export interface ChatEndpoint {
   assignedAgentId: string;
   assignedAgentName: string;
   connectionId?: string | null;
+  sponsorUserId?: string | null;
   providerAccountId?: string | null;
   providerAccountLabel?: string | null;
   botLabel?: string | null;
@@ -138,6 +141,8 @@ export interface ChatEndpoint {
     slackApp?: SlackAppConfiguration;
     slackSetupMethod?: "automatic" | "manual" | "existing";
     slackRegistration?: SlackRegistrationState;
+    slackAvatar?: SlackAvatarState;
+    slackAccount?: SlackAccountState;
     slackOAuthCallbackUri?: string | null;
     webhookVerifiedAt?: string | null;
     webhookSecretConfigured?: boolean;
@@ -196,7 +201,7 @@ export const chatEndpointsApi = {
     api.get<ChatEndpoint>(`/chat-endpoints/${endpointId}`),
   create: (
     companyId: string,
-    input: { provider: ChatProvider; assignedAgentId: string },
+    input: { provider: ChatProvider; assignedAgentId: string; slackApp?: SlackAppConfiguration },
   ) => api.post<ChatEndpoint>(`/companies/${companyId}/chat-endpoints`, input),
   update: (
     endpointId: string,
