@@ -1,8 +1,9 @@
+import { beginIdleTrackedWork } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, agentApiKeys, agentWakeupRequests, companies, companySecretProposals, createDb,
+  agentInstructionWorkingCopies, agents, agentApiKeys, agentWakeupRequests, companies, companySecretProposals, createDb,
   adapterAuthSessions, environments, environmentLeases, executionWorkspaces,
   heartbeatRuns, issues, projects, routines, type Db,
 } from "@paperclipai/db";
@@ -16,6 +17,11 @@ const held = (): IdleSleepDrainStatus => ({
 });
 const unknown = { version: 1, backgroundWork: "unknown" };
 const present = { version: 1, backgroundWork: "present" };
+const none = { version: 1, backgroundWork: "none" };
+const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
+const owned = () => ({ ...held(), ownerId });
+const emptyLocal = async () => "none" as const;
+
 
 describe("idle sleep safety failure boundaries", () => {
   it.each([
@@ -51,6 +57,42 @@ describe("idle sleep safety failure boundaries", () => {
   });
 });
 
+describe("idle sleep admission and local work", () => {
+  const emptyDb = () => ({ transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: async () => [{ blocked: false }] }) }) as unknown as Db;
+  it("requires the exact current idle owner and a bounded expiry", async () => {
+    expect(await readIdleSleepSafety(emptyDb(), held, () => now, undefined, emptyLocal)).toEqual(unknown);
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, "old-owner", emptyLocal)).toEqual(unknown);
+    expect(await readIdleSleepSafety(emptyDb(), () => ({ ...owned(), expiresAt: null }), () => now, ownerId, emptyLocal)).toEqual(unknown);
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, emptyLocal)).toEqual(none);
+  });
+  it.each(["present", "unknown"] as const)("retains local work reported as %s", async state => {
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, async () => state))
+      .toEqual({ version: 1, backgroundWork: state });
+  });
+  it("refuses sleep while accepted work remains in flight", async () => {
+    const done = beginIdleTrackedWork();
+    try { expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, emptyLocal)).toEqual(unknown); }
+    finally { done(); }
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, emptyLocal)).toEqual(none);
+  });
+  it("invalidates a scan even when concurrent work finishes before the final check", async () => {
+    const inspect = async () => { const done = beginIdleTrackedWork(); done(); return "none" as const; };
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, inspect)).toEqual(unknown);
+  });
+  it("rechecks owner identity after disk inspection, including same-millisecond replacement", async () => {
+    let status = owned();
+    const inspect = async () => { status = { ...status, ownerId: "replacement" }; return "none" as const; };
+    expect(await readIdleSleepSafety(emptyDb(), () => status, () => now, ownerId, inspect)).toEqual(unknown);
+  });
+  it("rechecks expiry after disk inspection and hides inspection errors", async () => {
+    let clock = now;
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => clock, ownerId, async () => {
+      clock += 60_000; return "none";
+    })).toEqual(unknown);
+    expect(await readIdleSleepSafety(emptyDb(), owned, () => now, ownerId, async () => { throw new Error("private spool path"); })).toEqual(unknown);
+  });
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${support.reason}`);
 (support.supported ? describe : describe.skip)("idle sleep durable work", () => {
@@ -64,7 +106,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
   afterAll(async () => { await database?.cleanup(); });
 
-  const read = () => readIdleSleepSafety(db, held, () => now);
+  const read = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal);
   async function seed() {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -75,13 +117,27 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     return { companyId, agentId, runId };
   }
 
-  it("does not authorize sleep from an empty database or completed history alone", async () => {
-    expect(await read()).toEqual(unknown);
+  it("keeps saved agent files awake until deferred cleanup completes", async () => {
+    const { companyId, agentId, runId } = await seed();
+    await db.insert(agentInstructionWorkingCopies).values({
+      runId, companyId, agentId, responsibleUserId: "test-user", entryFile: "AGENTS.md",
+      baseHash: "test-hash", localRoot: "/tmp/idle-copy", executionRoot: "/tmp/idle-copy",
+      location: "local", state: "saved", processStoppedAt: new Date(now),
+      receipt: { schema: "paperclip.agent-files.v1", cleanupPending: true },
+    });
+    expect(await read()).toEqual(present);
+    await db.update(agentInstructionWorkingCopies).set({ receipt: { schema: "paperclip.agent-files.v1" } })
+      .where(eq(agentInstructionWorkingCopies.runId, runId));
+    expect(await read()).toEqual(none);
+  });
+
+  it("authorizes an empty database and completed history under a quiet owned hold", async () => {
+    expect(await read()).toEqual(none);
     const { companyId } = await seed();
     await db.insert(issues).values({ companyId, title: "Finished work", status: "done" });
     await db.insert(routines).values({ companyId, title: "Paused schedule", status: "paused" });
     await db.insert(environmentLeases).values({ companyId, status: "released" });
-    expect(await read()).toEqual(unknown);
+    expect(await read()).toEqual(none);
   });
 
   it.each([
@@ -95,12 +151,12 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(present);
   });
 
-  it("reports an enabled heartbeat timer and returns unknown after it is disabled", async () => {
+  it("reports an enabled heartbeat timer and permits sleep after it is disabled", async () => {
     const { agentId } = await seed();
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 86_400 } } }).where(eq(agents.id, agentId));
     expect(await read()).toEqual(present);
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false, intervalSec: 86_400 } } }).where(eq(agents.id, agentId));
-    expect(await read()).toEqual(unknown);
+    expect(await read()).toEqual(none);
   });
 
   it("blocks a durable deferred wake", async () => {
@@ -156,7 +212,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     const [key] = await db.insert(agentApiKeys).values({ companyId, agentId, name: "Fixture", keyHash: "fixture-not-a-key" }).returning();
     expect(await read()).toEqual(present);
     await db.update(agentApiKeys).set({ revokedAt: new Date(now) }).where(eq(agentApiKeys.id, key!.id));
-    expect(await read()).toEqual(unknown);
+    expect(await read()).toEqual(none);
   });
 
   it("checks every company in the instance", async () => {
@@ -172,7 +228,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
       VALUES ('demo.on-demand', 'demo-plugin', '1.0.0', '{}'::jsonb)`);
     expect(await read()).toEqual(present);
     await db.execute(sql`UPDATE plugins SET status = 'disabled'`);
-    expect(await read()).toEqual(unknown);
+    expect(await read()).toEqual(none);
   });
 
   it("fails closed when the installed schema is older than the report", async () => {

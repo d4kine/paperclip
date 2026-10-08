@@ -1,7 +1,10 @@
+import { idleWorkSnapshot } from "./task-admission.js";
+import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 
 export interface IdleSleepDrainStatus {
+  ownerId?: string;
   draining: boolean;
   startedAt: Date | null;
   expiresAt: Date | null;
@@ -27,6 +30,10 @@ const WORK_CHECKS = [
   `SELECT 1 FROM heartbeat_runs WHERE
     status NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
     OR scheduled_retry_at IS NOT NULL OR cost_accounting_pending`,
+  `SELECT 1 FROM agent_instruction_working_copies WHERE
+    state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')
+    OR process_stopped_at IS NULL OR next_attempt_at IS NOT NULL
+    OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`,
   `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`,
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
@@ -59,26 +66,32 @@ const WORK_CHECKS = [
     "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
     "browser_use_browsers", "environment_custom_image_setup_sessions", "feedback_exports",
     "adapter_auth_sessions", "company_secret_proposals", "execution_workspaces",
+    "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
+    "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
+    "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",
   ].map((table) => `SELECT 1 FROM ${table}`),
 ] as const;
 
 function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus, now: number): boolean {
-  return before.draining && after.draining && before.activeRuns === 0 && before.pendingWakes === 0
+  return before.ownerId === after.ownerId && before.draining && after.draining && before.activeRuns === 0 && before.pendingWakes === 0
     && after.activeRuns === 0 && after.pendingWakes === 0
     && before.startedAt !== null && after.startedAt?.getTime() === before.startedAt.getTime()
     && (after.expiresAt === null || after.expiresAt.getTime() > now);
 }
 
 /** Inventory persisted work after the task-drain admission hold lands.
- * Empty scans remain unknown until ingress and process-local work are fenced.
+ * Only a caller holding the exact idle owner may receive an empty report.
  */
 export async function readIdleSleepSafety(
   db: Db,
   getDrainStatus: () => IdleSleepDrainStatus,
   now: () => number = Date.now,
+  ownerId?: string,
+  inspectLocalWork: () => Promise<IdleLocalWork> = readIdleLocalWork,
 ): Promise<IdleSleepSafety> {
   const unknown: IdleSleepSafety = { version: 1, backgroundWork: "unknown" };
   const before = getDrainStatus();
+  const localBefore = idleWorkSnapshot();
   if (!sameQuietHold(before, before, now())) return unknown;
   try {
     const blocked = await db.transaction(async (tx) => {
@@ -91,11 +104,15 @@ export async function readIdleSleepSafety(
       return rows.length === 1 && typeof rows[0]?.blocked === "boolean" ? rows[0].blocked : undefined;
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
     if (blocked === undefined || !sameQuietHold(before, getDrainStatus(), now())) return unknown;
-    // A task-drain hold only fences agent starts. It does not fence already
-    // admitted HTTP mutations or certify process-local cleanup/accounting debt.
-    // Keep an empty database scan non-authorizing until those owners provide
-    // a stable admission snapshot. Do not add an environment bypass here.
-    return { version: 1, backgroundWork: blocked ? "present" : "unknown" };
+    if (blocked) return { version: 1, backgroundWork: "present" };
+    if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
+    const local = await inspectLocalWork();
+    const after = getDrainStatus();
+    const localAfter = idleWorkSnapshot();
+    if (!sameQuietHold(before, after, now()) || localAfter.active !== 0 ||
+        localBefore.generation !== localAfter.generation) return unknown;
+    return { version: 1, backgroundWork: local };
+
   } catch {
     // Missing migrations, unknown state, malformed configuration, timeouts and
     // database failures never authorize stopping the application. Do not leak

@@ -1,50 +1,86 @@
-# Automatic idle sleep work inventory
+# Automatic idle sleep safety
 
-This report is a conservative inventory, not a complete sleep authorization.
-The current implementation returns `present` or `unknown`. It never returns
-`none`, including for an empty instance, so deploying it cannot enable automatic
-sleep or stop existing background work.
+`GET /api/instance/task-drain?idleSleepSafety=1&ownerId=<owner>` adds an
+instance-wide `idleSleepSafety` report for instance administrators and signed
+Cloud control callers. Ordinary task drains keep their existing behavior.
+Company members and agents cannot read this report.
 
-`GET /api/instance/task-drain?idleSleepSafety=1` adds an instance-wide
-`idleSleepSafety` report for instance administrators and authenticated Cloud
-control callers. Ordinary task-drain status and deploy/restart drains keep their
-existing behavior. Company members and agents cannot read this report.
+## Hosting protocol
 
-The hosting controller must acquire the task-drain hold and wait for zero active
-runs and pending wakes before requesting the report.
-Only `{ "version": 1, "backgroundWork": "none" }` permits automatic sleep.
-`present`, `unknown`, errors, and missing reports must keep the instance awake.
-This endpoint does not stop processes or schedule a future wake.
+1. Hold external admission at the hosting layer. Queue user requests for wake or
+   abort sleep when activity arrives. Do not send traffic into an instance that
+   is being stopped.
+2. Send `POST /api/instance/task-drain` with
+   `{ "purpose": "idle", "ttlMs": 120000 }`. Idle holds require a TTL from 5 to
+   300 seconds. Save the returned `ownerId` and `expiresAt`. An existing drain
+   returns 409. An unsupported purpose must leave automatic sleep disabled.
+3. Poll the report with that exact owner. Only
+   `{ "version": 1, "backgroundWork": "none" }` permits sleep. Require the same
+   `ownerId`, `draining: true`, zero run/wake counters, and enough remaining TTL
+   for the provider stop. `present`, `unknown`, missing fields, or errors must
+   keep the instance awake. Do not interpret `quiescent` alone as authorization.
+4. Revalidate the same hold immediately before stopping the instance. Keep
+   external admission closed through the provider stop. Never use an old report
+   after a restart, expired hold, changed owner, or failed validation.
+5. If sleep is abandoned, send `DELETE /api/instance/task-drain?ownerId=<owner>`.
+   A missing or stale owner cannot release another controller's idle hold. The
+   TTL clears an abandoned hold if the controller loses its response.
 
-The report checks persisted work in a bounded read-only transaction. It checks
-the same live admission hold before and after the scan. Queued and orphaned
-runs, future timers and retries, accounting debt, unfinished issues and cleanup,
-active routines, integrations, external API credentials, and plugin work report
-`present`. An idle agent and completed ordinary run history alone do not prove
-the absence of all work and still return `unknown`.
-Less common work sources conservatively block sleep on retained records, even
-when those records might be terminal. Database errors and missing migrations
-produce `unknown`; the response contains no tenant details or database errors.
+An idle hold rejects new tenant HTTP requests and WebSocket upgrades with 503
+and `Retry-After: 1`. Health checks and authenticated task-drain control remain
+available. Ordinary deploy drains do not enable this HTTP gate. The host must
+handle retry/wake at its ingress before enabling automatic sleep.
 
-Plugins can execute arbitrary background code. Every enabled plugin blocks
-sleep, including plugins with no declared jobs or webhooks. Version labels
-alone do not bind approval to reviewed worker contents. This report supports
-no plugin approval policy.
+## Accepted work and cleanup
 
-Scheduled and externally triggered work needs a durable hosting wake mechanism
-before it can be admitted to automatic sleep. A future timestamp alone is not
-such a mechanism. Add new background work sources to the safety report when
-introducing them. Missing support must fail closed.
+HTTP admission is installed before body parsing, authentication, webhooks and
+MCP ingress. The Express adapter tracks handler promises in nested routers and
+error middleware. Sending a response or losing the client does not complete an
+async handler. A handler that abandons its response without ending it remains a
+sleep blocker. New routes must be registered before this adapter is installed.
+Fire-and-forget work must have durable queue state or use `trackIdleWork`; a
+response is never a substitute for tracking that work.
 
-Before allowing `none`, complete and test these guarantees:
+Scheduler work already in flight remains counted until its promise settles.
+Idle holds pause new scheduler admissions. A generation counter invalidates a
+scan if tracked work both starts and finishes during inspection. Reports remain
+unknown until startup recovery and HTTP tracking are installed.
 
-- Fence new ingress and wait for already-admitted mutations to finish. A quiet
-  agent drain is insufficient. Related work is tracked in public PR #13413;
-  runtime-service admission alone does not cover every HTTP mutation.
-- Read accounting and sandbox cleanup spools without interpreting read failures
-  or malformed entries as empty. Include buffered and in-flight cleanup after
-  failed database or spool writes.
-- Keep the same owned admission hold through the final report and provider stop.
-  A restart, expired hold or operator replacement invalidates the report.
+The report inspects accounting and sandbox-cleanup spools directly. Any entry,
+including malformed JSON, temporary files and failed write probes, blocks sleep.
+Read errors and invalid spool paths return unknown. Recovery readers that skip
+bad records cannot certify an empty spool.
 
-This PR does not add a configuration switch that bypasses these guarantees.
+An orphan cleanup token starts before its spool write and remains held through
+buffering, queue splices, flush retries and buffer overflow. It ends only after
+the database owns cleanup. Queued usage receipts stay counted until capture
+settles. If receipt capture and the database failure fence both fail, a token
+continues to block sleep until the failure fence is durably written. A query
+that updates zero rows does not clear that debt. Unrecoverable cleanup requires
+operator reconciliation; this API does not discard it to save compute.
+
+## Persisted work and limits
+
+The report checks all companies in one bounded read-only database transaction.
+Queued and orphaned runs, timers, retries, accounting debt, unfinished issues,
+cleanup, active routines, integrations, external API credentials, and plugin
+work block sleep. Completed ordinary run history does not. Less common work
+sources conservatively block on any retained records. Missing migrations,
+malformed configuration and database errors produce unknown without exposing
+SQL or tenant data.
+
+Every enabled plugin blocks sleep. A version label does not prove that arbitrary
+worker code has no background activity. No plugin approval or configuration
+bypass is supported. Scheduled and externally triggered work needs a durable
+host wake mechanism before this restriction can be relaxed.
+
+This is a single-process admission protocol. A restart clears the owner. The
+host must serialize sleep with deploy/wake operations and bind its final check
+to the instance it stops. An unexpected restart after the final check can still
+race an external provider stop; a process-local report cannot fence that remote
+operation by itself. Multiple replicas require shared fencing. The protocol
+does not make existing in-memory-only debt survive an unplanned process crash.
+
+Related public PR #13413 adds runtime-service controller requirements and uses
+the same `purpose: "idle"` / `ownerId` vocabulary. This report conservatively
+blocks all retained runtime-service state instead of approving such services.
