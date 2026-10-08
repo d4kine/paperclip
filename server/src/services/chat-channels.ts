@@ -2,6 +2,7 @@ import { chatCredentialMutationLease, CREDENTIAL_MUTATION_LEASE_TTL_MS, type Cre
 import { slackChatRegistrationService, slackRegistrationProjection } from "./chat-slack-registration.js";
 import { chatSlackRegistrations } from "@paperclipai/db";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
+import { authorizationService, canActorReadIssuePrivacy, canPublishIssueToChatAudience } from "./authorization.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -1452,8 +1453,8 @@ export interface ChatChannelServiceOptions {
   /** Optional verified ingress origin; never used for board or identity links. */
   webhookPublicBaseUrl?: string | null;
   runtime?: ChatSdkRuntime;
-  /** Testable scheduler hook; production defaults to the next event-loop turn. */
-  scheduleDeferredWork?: (task: () => void) => void;
+  /** Testable scheduler hook; its callback settles after the tracked work finishes. */
+  scheduleDeferredWork?: (task: () => void | Promise<void>) => void;
   /** Test boundary after selecting due Slack status work and before claiming. */
   slackSessionSyncSelectionBarrier?: () => Promise<void>;
   /** Narrow fault-injection boundary for the one-time setup-secret audit. */
@@ -3410,6 +3411,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       backgroundMessageTasks.add(pending);
       void pending.finally(() => backgroundMessageTasks.delete(pending));
+      return pending;
     });
   }
 
@@ -11589,6 +11591,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (!admission?.allowed) throw deny();
       authorization.userId = admission.responsibleUserId ?? null;
     }
+    if (!(await canActorReadIssuePrivacy(tx, authorization.userId
+      ? { type: "board", userId: authorization.userId }
+      : { type: "none" }, issue))) throw deny();
     const expectedUserId =
       payload.requestedByActorType === "user"
         ? payload.requestedByActorId
@@ -13459,6 +13464,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     tx: DbOrTransaction,
     publication: typeof chatPublications.$inferSelect,
   ): Promise<boolean> {
+    if (!(await canPublishIssueToChatAudience(tx, publication))) return false;
     const notice = parseInboundWakePublicationKey(publication.idempotencyKey);
     let runId = runIdFromMilestonePublication(publication);
     if (!runId && publication.commentId && !notice) {
